@@ -36,10 +36,12 @@ import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
 
+import org.apache.commons.compress.archivers.zip.Zip64Mode;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
+import org.apache.commons.compress.archivers.zip.ZipShort;
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.input.CloseShieldInputStream;
@@ -295,9 +297,14 @@ public class Migration {
     }
 
 
-    private void migrateArchiveStreaming(InputStream src, OutputStream dest) throws IOException {
+    private void migrateArchiveStreaming(String name, InputStream src, OutputStream dest) throws IOException {
         try (ZipArchiveInputStream srcZipStream = new ZipArchiveInputStream(CloseShieldInputStream.wrap(src));
                 ZipArchiveOutputStream destZipStream = new ZipArchiveOutputStream(CloseShieldOutputStream.wrap(dest))) {
+
+            // disable the use of Zip64 extra fields for JAR files to work around JDK-8303866 (https://bugs.openjdk.org/browse/JDK-8303866)
+            Zip64Mode zip64Mode = name.toLowerCase().endsWith(".jar") ? Zip64Mode.Never : Zip64Mode.AsNeeded;
+            destZipStream.setUseZip64(zip64Mode);
+
             ZipArchiveEntry srcZipEntry;
             CRC32 crc32 = new CRC32();
             while ((srcZipEntry = srcZipStream.getNextZipEntry()) != null) {
@@ -305,6 +312,9 @@ public class Migration {
                 if (isSignatureFile(srcName)) {
                     logger.log(Level.WARNING, sm.getString("migration.skipSignatureFile", srcName));
                     continue;
+                }
+                if (zip64Mode == Zip64Mode.Never) {
+                    srcZipEntry.removeExtraField(new ZipShort(0x0001));
                 }
                 String destName = profile.convert(srcName);
                 if (srcZipEntry.getMethod() == ZipEntry.STORED) {
@@ -386,7 +396,7 @@ public class Migration {
                 logger.log(Level.INFO, sm.getString("migration.archive.complete", name));
             } else {
                 logger.log(Level.INFO, sm.getString("migration.archive.stream", name));
-                migrateArchiveStreaming(src, dest);
+                migrateArchiveStreaming(name, src, dest);
                 logger.log(Level.INFO, sm.getString("migration.archive.complete", name));
             }
         } else {
